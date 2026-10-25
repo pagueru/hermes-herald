@@ -274,6 +274,16 @@ Remote callback and approval notices use `API calls: ?` when no call count is
 available. Run token usage is preserved separately; do not infer call counts
 from tokens.
 
+### Agents defined by Markdown files
+
+When `hermes_herald.agents.dir` is configured, `dispatch_chat` accepts `agent="<name>"` in place of `profile`. The name matches a `.md` file in that folder.
+
+- A new plan or a new question goes with `agent` only and no `conversation`. The reply includes `conversation` as `<agent>:<session_id>`.
+- To return to the same agent about the same subject, pass that `conversation` back. The agent may be omitted then; it comes from the prefix.
+- Do not reuse an old conversation for an unrelated question. It carries the earlier context forward.
+- `conversation` cannot be combined with `new_session`, and `agent` cannot be combined with `profile`.
+- Fail-closed errors send nothing to the target: unknown agent, no tier covers the agent's `tools`, unmapped `model`, malformed or foreign `conversation`, agents not configured. Fix the call; do not resend the same arguments.
+
 ## `delegate_subagent`
 
 ### Experimental host mode: poll, do not await a completion message

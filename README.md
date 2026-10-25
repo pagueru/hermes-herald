@@ -482,6 +482,54 @@ Auto-delivery is process-bound: restarting the origin loses its active listener.
 
 ---
 
+## Agents defined by Markdown files
+
+A Herald agent is a Markdown file. The body is its system prompt, and the frontmatter declares what it may use. Herald routes each agent to a generic profile by permission level, so one profile can serve many agents.
+
+```yaml
+# config.yaml on the origin profile
+hermes_herald:
+  agents:
+    dir: /path/to/agents          # one .md file per agent
+    tiers:                        # first tier whose covers include all of the agent's tools wins
+      - profile: herald-read
+        covers: [read_file, search_files]
+      - profile: herald-write
+        covers: [read_file, search_files, write_file, patch]
+    model_map:                    # agent "model:" -> model_routes alias on the target
+      opus: claude-opus
+      sonnet: claude-sonnet
+```
+
+The tier profiles need routes in `hermes_herald.profiles` as usual, with capability `chat`.
+
+```markdown
+---
+name: oracle
+description: Second opinion on plans and designs.
+tools: [read_file, search_files]
+model: sonnet
+effort: high
+---
+
+You review plans. Read the code before you answer.
+```
+
+- `dispatch_chat(agent="oracle", message=...)` always starts a new conversation. The reply includes `conversation` as `oracle:<session_id>`. Pass it back to continue; Herald checks that the session exists before resuming.
+- The conversation id carries the session. Herald keeps no conversation state of its own.
+- The body of the `.md` is sent as a `system` message on every turn, before any caller `instructions`.
+- `model: null`, `model: inherit`, or no `model:` uses the target profile default. A model missing from `model_map` is an error.
+- The tool description lists the routable agents as `- name: description`. Changes to `.md` files apply on the next plugin load (gateway restart).
+- `dispatch_agent` does not accept `agent` in this version.
+
+Fail-closed errors send nothing to the target:
+
+- unknown agent, or agents not configured;
+- no tier covers the agent's `tools`;
+- `model` not in `model_map`;
+- malformed `conversation`, or one that belongs to another agent;
+- `conversation` with `new_session`, or `agent` with `profile`.
+
 ## Pillar 2 — A model switchboard for local subagents
 
 Hermes core’s `delegate_task` uses normal delegation routing. `delegate_subagent`
