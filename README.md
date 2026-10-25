@@ -515,11 +515,11 @@ effort: high
 You review plans. Read the code before you answer.
 ```
 
-- `dispatch_chat(agent="oracle", message=...)` always starts a new conversation. The reply includes `conversation` as `oracle:<session_id>`. Pass it back to continue; Herald checks that the session exists before resuming.
+- `dispatch_chat(agent="oracle", message=...)` always starts a new conversation. The reply includes `conversation` as `oracle:<session_id>`. Pass it back to continue (`agent` may be omitted then; it comes from the prefix); Herald checks that the session exists before resuming.
 - The conversation id carries the session. Herald keeps no conversation state of its own.
 - The body of the `.md` is sent as a `system` message on every turn, before any caller `instructions`.
 - `model: null`, `model: inherit`, or no `model:` uses the target profile default. A model missing from `model_map` is an error.
-- The tool description lists the routable agents as `- name: description`. Changes to `.md` files apply on the next plugin load (gateway restart).
+- The tool description lists the routable agents as `- name: description`. The catalog in the tool description is built when the plugin loads (gateway restart); routing and the prompt read the `.md` files on every call.
 - `dispatch_agent` does not accept `agent` in this version.
 
 Fail-closed errors send nothing to the target:
