@@ -51,7 +51,11 @@ def _parse_agent(text: str) -> AgentSpec:
         end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
     except StopIteration:
         raise ValueError("frontmatter sem fechamento") from None
-    meta = safe_load("\n".join(lines[1:end]))
+    try:
+        meta = safe_load("\n".join(lines[1:end]))
+    except Exception as exc:  # classe de erro do parser do host é desconhecida
+        msg = f"yaml inválido: {exc}"
+        raise ValueError(msg) from exc
     if not isinstance(meta, dict):
         raise TypeError("frontmatter inválido")
     name = _opt_str(meta.get("name"))
