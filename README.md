@@ -501,7 +501,7 @@ hermes_herald:
       sonnet: claude-sonnet
 ```
 
-The tier profiles need routes in `hermes_herald.profiles` as usual, with capability `chat`.
+The tier profiles need routes in `hermes_herald.profiles` as usual, with capability `chat` (and `dispatch` to use them from `dispatch_agent`).
 
 ```markdown
 ---
@@ -519,8 +519,9 @@ You review plans. Read the code before you answer.
 - The conversation id carries the session. Herald keeps no conversation state of its own.
 - The body of the `.md` is sent as a `system` message on every turn, before any caller `instructions`.
 - `model: null`, `model: inherit`, or no `model:` uses the target profile default. A model missing from `model_map` is an error.
-- The tool description lists the routable agents as `- name: description`. The catalog in the tool description is built when the plugin loads (gateway restart); routing and the prompt read the `.md` files on every call.
-- `dispatch_agent` does not accept `agent` in this version.
+- The descriptions of `dispatch_chat` and `dispatch_agent` list the routable agents as `- name: description`. The catalog is built when the plugin loads (gateway restart or plugin reload); routing and the prompt read the `.md` files on every call.
+- `dispatch_agent(agent="scout", message=...)` starts an async run on the agent's tier profile with the agent's model and effort; the `.md` body goes as the run's `instructions`, followed by any caller `instructions`. Explicit `model` and `reasoning_effort` win over the agent's. Each run is a new session, so `conversation` is refused; use `dispatch_chat` to continue a conversation. Several `dispatch_agent(agent=...)` calls in one turn run in parallel, and results arrive by callback or `collect_dispatches`.
+- `agent` together with `profile` is refused, in both tools.
 
 Fail-closed errors send nothing to the target:
 

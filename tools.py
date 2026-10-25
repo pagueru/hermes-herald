@@ -89,7 +89,10 @@ DISPATCH_AGENT_SCHEMA: Dict[str, Any] = {
         "dispatch_status and check_dispatch to recover and poll known runs. "
         "Multiple dispatches can be issued in one turn for parallel execution. "
         "For synchronous multi-turn conversations with session persistence, "
-        "use dispatch_chat instead. Before passing model=, call "
+        "use dispatch_chat instead. Pass profile= for a raw profile, or "
+        "agent= for a named agent (.md) that brings its own profile, model, "
+        "effort and instructions; several agent= calls in one turn run in "
+        "parallel. Before passing model=, call "
         "list_profile_models(profile=<target>) and copy one string from "
         "pass_as_model; guessed or provider-prefixed slugs fail closed."
     ),
@@ -100,7 +103,20 @@ DISPATCH_AGENT_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Profile name from hermes_herald.profiles config "
-                    "(e.g. 'vincent', 'y10', 'qc-engagement')."
+                    "(e.g. 'vincent', 'y10', 'qc-engagement'). Required "
+                    "unless agent is given; never both."
+                ),
+            },
+            "agent": {
+                "type": "string",
+                "description": (
+                    "Agent name defined by a .md file in hermes_herald.agents.dir. "
+                    "Use instead of profile; never both. The agent's tier picks "
+                    "the profile, its model/effort pick model and "
+                    "reasoning_effort (explicit arguments win), and its body is "
+                    "sent as instructions, before any caller instructions. Each "
+                    "run is a new session; to continue a conversation with an "
+                    "agent use dispatch_chat."
                 ),
             },
             "idempotency_key": {
@@ -219,7 +235,7 @@ DISPATCH_AGENT_SCHEMA: Dict[str, Any] = {
                 ),
             },
         },
-        "required": ["profile", "message"],
+        "required": ["message"],
     },
 }
 
@@ -1988,12 +2004,70 @@ def _async_delivery_supported() -> bool:
         # invisible orphan. Missing/broken seams therefore fail closed.
         return False
 
+def _load_agent_route(agent_name: str):
+    """Carrega o .md do agente e resolve a rota; levanta AgentRouteError se inviável.
+
+    Único ponto de resolução por agente, usado por dispatch_chat e dispatch_agent.
+    """
+    agents_cfg = cfg.get_agents_config()
+    agents_dir = str(agents_cfg.get("dir") or "").strip()
+    specs = load_agents(Path(agents_dir)) if agents_dir else {}
+    if not specs:
+        raise AgentRouteError(
+            "Agents are not configured (hermes_herald.agents.dir is "
+            "missing or empty). No message was sent."
+        )
+    agent_spec = specs.get(agent_name)
+    if agent_spec is None:
+        raise AgentRouteError(f"Unknown agent '{agent_name}'. No message was sent.")
+    return agent_spec, resolve_route(agent_spec, agents_cfg)
+
+
+def _agent_dispatch_args(args: dict) -> tuple[dict, str]:
+    """Troca agent= por profile, model, reasoning_effort e instructions resolvidos.
+
+    Roda antes da identidade de idempotência, para que a impressão digital reflita
+    exatamente o que vai na run. Levanta AgentRouteError se a chamada for inválida.
+    """
+    if str(args.get("conversation") or "").strip():
+        raise AgentRouteError(
+            "'conversation' is not supported by dispatch_agent: each run starts a "
+            "new session. Use dispatch_chat to continue a conversation. No remote "
+            "run was started."
+        )
+    agent_name = str(args.get("agent") or "").strip()
+    if not agent_name:
+        return {k: v for k, v in args.items() if k != "agent"}, ""
+    if str(args.get("profile") or "").strip():
+        raise AgentRouteError(
+            "Pass either 'profile' or 'agent', not both. No remote run was started."
+        )
+    agent_spec, route = _load_agent_route(agent_name)
+    resolved = {k: v for k, v in args.items() if k != "agent"}
+    resolved["profile"] = route.profile
+    if not resolved.get("model") and route.model:
+        resolved["model"] = route.model
+    if resolved.get("reasoning_effort") is None and route.reasoning_effort:
+        resolved["reasoning_effort"] = route.reasoning_effort
+    caller_instructions = resolved.get("instructions")
+    resolved["instructions"] = (
+        f"{agent_spec.body}\n\n{caller_instructions}"
+        if caller_instructions
+        else agent_spec.body
+    )
+    return resolved, agent_spec.name
+
+
 def handle_dispatch_agent(args: dict, **kwargs) -> str:
     import sqlite3
     from http.client import HTTPException
 
     from .dispatch_identity import DispatchIdentity, IdentityError
 
+    try:
+        args, agent_name = _agent_dispatch_args(args)
+    except AgentRouteError as exc:
+        return _tool_error(str(exc))
     try:
         identity = DispatchIdentity(args)
     except IdentityError as exc:
@@ -2006,6 +2080,8 @@ def handle_dispatch_agent(args: dict, **kwargs) -> str:
     except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error, HTTPException) as exc:
         response = identity.accepted_response or {"status": "error"}
         response["error"] = f"Dispatch persistence/transport failed; reconcile before retrying: {exc}"
+    if agent_name:
+        response.setdefault("agent", agent_name)
     try:
         return json.dumps(identity.finish(response))
     except (OSError, RuntimeError, sqlite3.Error) as exc:
@@ -2036,7 +2112,7 @@ def _handle_dispatch_agent(args: dict, *, _identity, **kwargs) -> str:
         return _tool_error(str(e))
 
     if not profile:
-        return _tool_error("'profile' is required.")
+        return _tool_error("'profile' or 'agent' is required.")
     if not message:
         return _tool_error("'message' is required.")
     if delivery not in {"callback", "none"}:
@@ -2546,20 +2622,7 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
                         f"'{conv_agent}', not '{agent_name}'. No message was sent."
                     )
                 agent_name = conv_agent
-            agents_cfg = cfg.get_agents_config()
-            agents_dir = str(agents_cfg.get("dir") or "").strip()
-            specs = load_agents(Path(agents_dir)) if agents_dir else {}
-            if not specs:
-                return _tool_error(
-                    "Agents are not configured (hermes_herald.agents.dir is "
-                    "missing or empty). No message was sent."
-                )
-            agent_spec = specs.get(agent_name)
-            if agent_spec is None:
-                raise AgentRouteError(
-                    f"Unknown agent '{agent_name}'. No message was sent."
-                )
-            route = resolve_route(agent_spec, agents_cfg)
+            agent_spec, route = _load_agent_route(agent_name)
         except AgentRouteError as exc:
             return _tool_error(str(exc))
         profile = route.profile
