@@ -2029,15 +2029,16 @@ def _agent_dispatch_args(args: dict) -> tuple[dict, str]:
     Roda antes da identidade de idempotência, para que a impressão digital reflita
     exatamente o que vai na run. Levanta AgentRouteError se a chamada for inválida.
     """
+    agent_name = str(args.get("agent") or "").strip()
+    if not agent_name:
+        # caminho legado: conversation segue ignorado, como antes do agent=
+        return {k: v for k, v in args.items() if k != "agent"}, ""
     if str(args.get("conversation") or "").strip():
         raise AgentRouteError(
             "'conversation' is not supported by dispatch_agent: each run starts a "
             "new session. Use dispatch_chat to continue a conversation. No remote "
             "run was started."
         )
-    agent_name = str(args.get("agent") or "").strip()
-    if not agent_name:
-        return {k: v for k, v in args.items() if k != "agent"}, ""
     if str(args.get("profile") or "").strip():
         raise AgentRouteError(
             "Pass either 'profile' or 'agent', not both. No remote run was started."
@@ -2049,11 +2050,9 @@ def _agent_dispatch_args(args: dict) -> tuple[dict, str]:
         resolved["model"] = route.model
     if resolved.get("reasoning_effort") is None and route.reasoning_effort:
         resolved["reasoning_effort"] = route.reasoning_effort
-    caller_instructions = resolved.get("instructions")
-    resolved["instructions"] = (
-        f"{agent_spec.body}\n\n{caller_instructions}"
-        if caller_instructions
-        else agent_spec.body
+    # corpo vazio ou instructions ausentes não deixam linhas em branco nas pontas
+    resolved["instructions"] = "\n\n".join(
+        filter(None, (agent_spec.body, resolved.get("instructions")))
     )
     return resolved, agent_spec.name
 

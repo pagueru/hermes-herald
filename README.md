@@ -522,6 +522,7 @@ You review plans. Read the code before you answer.
 - The descriptions of `dispatch_chat` and `dispatch_agent` list the routable agents as `- name: description`. The catalog is built when the plugin loads (gateway restart or plugin reload); routing and the prompt read the `.md` files on every call.
 - `dispatch_agent(agent="scout", message=...)` starts an async run on the agent's tier profile with the agent's model and effort; the `.md` body goes as the run's `instructions`, followed by any caller `instructions`. Explicit `model` and `reasoning_effort` win over the agent's. Each run is a new session, so `conversation` is refused; use `dispatch_chat` to continue a conversation. Several `dispatch_agent(agent=...)` calls in one turn run in parallel, and results arrive by callback or `collect_dispatches`.
 - `agent` together with `profile` is refused, in both tools.
+- With `dispatch_agent(agent=...)` the `.md` body travels in `instructions`, so it is stored in the dispatch ledger and in the idempotency record like any caller instructions. Editing the `.md` (or tiers/`model_map`) and retrying with the same `idempotency_key` is an `idempotency_conflict`; use a new key.
 
 Fail-closed errors send nothing to the target:
 

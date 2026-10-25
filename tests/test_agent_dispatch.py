@@ -1,9 +1,12 @@
 # ruff: noqa: INP001 (tests do plugin não são pacote; conftest monta o import)
 """dispatch_agent por agente (.md) em run assíncrona; transporte sintético."""
 
+import importlib.util
 import json
+import sys
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from hermes_herald import callback, config, tools
@@ -41,7 +44,7 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict:
     monkeypatch.setattr(callback, "capture_session_routing", lambda *_a: dict(owner))
     monkeypatch.setattr(callback, "start_listener", lambda **_kw: None)
     monkeypatch.setattr(tools, "_async_delivery_supported", lambda: True)
-    rec: dict = {"profiles": [], "requests": []}
+    rec: dict = {"profiles": [], "requests": [], "agents_dir": agents_dir}
 
     def resolve_profile(name: str, **_kwargs: object) -> tuple[dict, None]:
         rec["profiles"].append(name)
@@ -108,18 +111,18 @@ def test_agent_with_profile_is_refused(env: dict) -> None:
     _assert_refused_offline(_call({"agent": "scout", "profile": "agent-web", "message": "x"}), env)
 
 
-@pytest.mark.parametrize(
-    "args",
-    [
-        {"agent": "scout", "conversation": "scout:s1", "message": "x"},
-        {"conversation": "scout:s1", "message": "x"},
-    ],
-)
-def test_conversation_is_refused(env: dict, args: dict) -> None:
-    """Testa que conversation é recusado: run é sempre sessão nova."""
-    out = _call(args)
+def test_conversation_with_agent_is_refused(env: dict) -> None:
+    """Testa que conversation com agent é recusado: run é sempre sessão nova."""
+    out = _call({"agent": "scout", "conversation": "scout:s1", "message": "x"})
     _assert_refused_offline(out, env)
     assert "conversation" in out["error"]
+
+
+def test_conversation_without_agent_is_ignored_as_before(env: dict) -> None:
+    """Testa que no caminho legado conversation segue ignorado, sem recusa."""
+    out = _call({"profile": "reviewer", "conversation": "scout:s1", "message": "x"})
+    assert out["run_id"] == "run-1"
+    assert env["requests"][0][1] == {"input": "x"}
 
 
 def test_unknown_agent_is_refused(env: dict) -> None:
@@ -168,3 +171,79 @@ def test_schema_exposes_optional_agent() -> None:
     assert params["properties"]["agent"]["type"] == "string"
     assert "profile" not in params["required"]
     assert "conversation" not in params["properties"]
+
+
+def test_empty_agent_body_does_not_prefix_blank_lines(env: dict) -> None:
+    """Testa que corpo vazio no .md não deixa quebra de linha antes das instructions."""
+    text = "---\nname: blank\ndescription: d\ntools: Read\n---\n"
+    (env["agents_dir"] / "blank.md").write_text(text, encoding="utf-8")
+    _call({"agent": "blank", "message": "x", "instructions": "seja breve"})
+    assert env["requests"][0][1]["instructions"] == "seja breve"
+
+
+def test_retry_with_agent_and_same_key_replays_without_new_post(env: dict) -> None:
+    """Testa que retry deliberado com agent e mesma chave não gera novo POST."""
+    first = _call({"agent": "scout", "message": "x", "idempotency_key": "k-agent"})
+    again = _call({"agent": "scout", "message": "x", "idempotency_key": "k-agent"})
+    assert again["run_id"] == first["run_id"] == "run-1"
+    assert again["idempotency_replayed"] is True
+    assert len(env["requests"]) == 1
+
+
+def test_retry_with_agent_after_md_edit_conflicts_without_new_post(env: dict) -> None:
+    """Testa que .md editado entre as chamadas gera conflito e nenhum POST novo."""
+    _call({"agent": "scout", "message": "x", "idempotency_key": "k-edit"})
+    _write_agent(env["agents_dir"], "scout", "WebSearch, Read", "model: haiku\neffort: low\n")
+    md = env["agents_dir"] / "scout.md"
+    edited = md.read_text(encoding="utf-8").replace("Corpo do scout", "Corpo novo")
+    md.write_text(edited, encoding="utf-8")
+    out = _call({"agent": "scout", "message": "x", "idempotency_key": "k-edit"})
+    assert out["error_code"] == "idempotency_conflict"
+    assert "agent" in out["error"]
+    assert "model_map" in out["error"]
+    assert len(env["requests"]) == 1
+
+
+def _load_plugin_entry() -> object:
+    """Carrega o __init__.py do plugin como o loader do Hermes faz."""
+    plugin_dir = Path(tools.__file__).resolve().parent
+    entry = plugin_dir / "__init__.py"
+    spec = importlib.util.spec_from_file_location("hermes_herald.plugin_entry", entry)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _registered_schemas(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Roda o register com ctx falso e devolve o schema registrado por tool."""
+    module = _load_plugin_entry()
+    # __init__.py carregado assim vira pacote próprio, com cópia própria de config
+    plugin_config = sys.modules[f"{module.__name__}.config"]
+    monkeypatch.setattr(plugin_config, "get_agents_config", config.get_agents_config)
+    ctx = MagicMock()
+    module.register(ctx)
+    return {c.kwargs["name"]: c.kwargs["schema"] for c in ctx.register_tool.call_args_list}
+
+
+@pytest.mark.usefixtures("env")
+def test_register_decorates_dispatch_agent_with_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Testa que o register põe o catálogo de agentes no dispatch_agent e no chat."""
+    schemas = _registered_schemas(monkeypatch)
+    for name in ("dispatch_agent", "dispatch_chat"):
+        assert "Agents available via agent=" in schemas[name]["description"]
+        assert "- scout: d" in schemas[name]["description"]
+
+
+@pytest.mark.usefixtures("env")
+def test_register_keeps_base_schemas_when_agents_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Testa que falha ao carregar agentes deixa os schemas base."""
+
+    def boom() -> dict:
+        msg = "config quebrada"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(config, "get_agents_config", boom)
+    schemas = _registered_schemas(monkeypatch)
+    assert schemas["dispatch_agent"]["description"] == tools.DISPATCH_AGENT_SCHEMA["description"]
+    assert schemas["dispatch_chat"]["description"] == tools.DISPATCH_CHAT_SCHEMA["description"]

@@ -79,7 +79,7 @@ class DispatchIdentity:
             else:
                 self.row = dict(row)
                 if (row["request_json"], row["owner_json"], row["route_json"]) != (request, owner, route):
-                    raise IdentityError("idempotency_conflict", "This key belongs to different arguments, routing, or origin/session ownership. Do not change the request when retrying.")
+                    raise IdentityError("idempotency_conflict", "This key belongs to different arguments, routing, or origin/session ownership. Do not change the request when retrying. With agent=, an edit to the agent's .md or to agent routing (tiers, model_map) since the original call also changes the request; use a new key to start new work.")
                 if row["response_json"]:
                     response = json.loads(row["response_json"])
                     response["idempotency_replayed"] = True
