@@ -42,3 +42,10 @@ def test_load_agents_skips_file_without_name(tmp_path: Path) -> None:
 def test_load_agents_missing_dir_returns_empty(tmp_path: Path) -> None:
     """Testa test_load_agents_missing_dir_returns_empty."""
     assert agents.load_agents(tmp_path / "nao-existe") == {}
+
+
+def test_load_agents_skips_malformed_yaml(tmp_path: Path) -> None:
+    """Testa que YAML quebrado não derruba os agentes válidos."""
+    (tmp_path / "bad.md").write_text("---\nname: bad\ntools: [Read\n---\nx\n", encoding="utf-8")
+    (tmp_path / "ok.md").write_text("---\nname: ok\n---\ncorpo\n", encoding="utf-8")
+    assert list(agents.load_agents(tmp_path)) == ["ok"]
