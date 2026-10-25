@@ -47,6 +47,7 @@ from pathlib import Path
 from .host_lifecycle import HostLifecycleAdapter, HOST_DELEGATE_SUBAGENT_SCHEMA
 from .tools import (
     ALL_SCHEMAS,
+    DISPATCH_CHAT_SCHEMA,
     handle_dispatch_agent,
     handle_check_dispatch,
     handle_collect_dispatches,
@@ -90,12 +91,12 @@ def register(ctx) -> None:
     if os.environ.get("HERMES_PLUGIN_HOST_PROCESS") == "1":
         host_delegate = HostLifecycleAdapter(ctx)
 
-    chat_schema = ALL_SCHEMAS[4]
+    chat_schema = DISPATCH_CHAT_SCHEMA
     try:
         from . import agents, config
 
         agents_cfg = config.get_agents_config()
-        specs = agents.load_agents(Path(agents_cfg["dir"])) if agents_cfg.get("dir") else {}
+        specs = agents.load_agents(Path(str(agents_cfg["dir"]).strip())) if agents_cfg.get("dir") else {}
         chat_schema = agents.with_agents_catalog(chat_schema, specs, agents_cfg)
     except Exception:  # registro do plugin nunca falha por causa de agentes
         logger.warning("hermes-herald: agents catalog skipped", exc_info=True)

@@ -35,7 +35,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import (
     HTTPRedirectHandler,
     Request,
@@ -340,7 +340,8 @@ DISPATCH_CHAT_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Profile name from hermes_herald.profiles config "
-                    "(e.g. 'marie', 'ada', 'richard', 'rosalind')."
+                    "(e.g. 'marie', 'ada', 'richard', 'rosalind'). "
+                    "Required unless agent or conversation is given."
                 ),
             },
             "message": {
@@ -2575,7 +2576,7 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
         return _tool_error(str(e))
 
     if not profile:
-        return _tool_error("'profile' is required.")
+        return _tool_error("'profile' or 'agent' is required.")
     if not message:
         return _tool_error("'message' is required.")
 
@@ -2614,7 +2615,7 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
         if session_id:
             try:
                 session_check = _get_json(
-                    f"{pcfg['url']}/api/sessions/{session_id}",
+                    f"{pcfg['url']}/api/sessions/{quote(session_id, safe='')}",
                     pcfg["api_key"],
                     timeout=10.0,
                 )
@@ -2737,6 +2738,12 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
             # Session was deleted/expired — clear cache and retry with new session
             if agent_spec is None:
                 store_profile_session_id(profile, "")
+            else:
+                return _tool_error(
+                    f"Route for profile {profile} returned 404; check "
+                    f"hermes_herald.profiles.{profile}.url and that the target is "
+                    "served (multiplex). No conversation was lost."
+                )
             return _tool_error(
                 f"Session {session_id} not found on {profile}. It may have "
                 f"expired. Retry with new_session=true to start a fresh conversation."
@@ -2746,6 +2753,12 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
                 f"Cannot reach {profile} API server at {pcfg['url']}. "
                 f"Is the gateway running for that profile? ({msg})"
             )
+        error_agent_fields: Dict[str, str] = {}
+        if agent_spec is not None:
+            error_agent_fields = {
+                "agent": agent_spec.name,
+                "conversation": make_conversation_id(agent_spec.name, session_id),
+            }
         return json.dumps({
             "status": "error",
             "error_code": "chat_timeout" if isinstance(e, TimeoutError) else "chat_failed",
@@ -2756,6 +2769,7 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
             ),
             "profile": profile,
             "session_id": session_id,
+            **error_agent_fields,
         })
 
     # Extract the reply
@@ -2845,6 +2859,7 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
             "reply": reply,
             "usage": usage,
             "error": f"Reply received, but the dispatch ledger write failed: {exc}",
+            **agent_fields,
         })
 
     response = {

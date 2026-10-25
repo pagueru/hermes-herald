@@ -50,6 +50,8 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict:
 
     def stream(_url: str, _key: str, body: dict, **kwargs: object) -> dict:
         rec["streams"].append({"body": body, **kwargs})
+        if rec.get("stream_exc"):
+            raise rec["stream_exc"]
         if rec.get("stream_error"):
             raise RuntimeError(rec["stream_error"])
         return {
@@ -160,7 +162,33 @@ def test_streaming_404_after_session_check_is_not_conversation_error(env: dict) 
     out = _call({"conversation": "oracle:sess-9", "message": "x"})
     assert _is_error(out)
     assert "conversation expired" not in out["error"]
+    assert "Route for profile agent-ro returned 404" in out["error"]
+    assert "new_session" not in out["error"]
     assert env["stored"] == []
+
+
+def test_timeout_on_agent_path_keeps_conversation(env: dict) -> None:
+    """Testa que timeout no caminho de agente devolve agent e conversation."""
+    env["stream_exc"] = TimeoutError("stalled")
+    out = _call({"conversation": "oracle:sess-9", "message": "x"})
+    assert out["error_code"] == "chat_timeout"
+    assert out["agent"] == "oracle"
+    assert out["conversation"] == "oracle:sess-9"
+
+
+def test_timeout_on_legacy_path_has_no_conversation(env: dict) -> None:
+    """Testa que timeout no caminho legado não ganha campos de agente."""
+    env["stream_exc"] = TimeoutError("stalled")
+    out = _call({"profile": "p", "message": "x"})
+    assert out["error_code"] == "chat_timeout"
+    assert "conversation" not in out
+    assert "agent" not in out
+
+
+def test_session_id_is_escaped_in_existence_check(env: dict) -> None:
+    """Testa que o id de sessão é escapado na URL do GET de existência."""
+    _call({"conversation": "oracle:a/b", "message": "x"})
+    assert env["gets"][0].endswith("/api/sessions/a%2Fb")
 
 
 def test_caller_instructions_are_appended_after_agent_body(env: dict) -> None:
