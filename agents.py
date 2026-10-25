@@ -84,3 +84,65 @@ def load_agents(agents_dir: Path) -> dict[str, AgentSpec]:
             continue
         specs[spec.name] = spec
     return specs
+
+
+class AgentRouteError(ValueError):
+    """Erro de roteamento; a mensagem é instrução ao modelo chamador."""
+
+
+@dataclass(frozen=True)
+class AgentRoute:
+    """Destino resolvido de um agente: perfil, modelo e esforço."""
+
+    profile: str
+    model: str | None
+    reasoning_effort: str | None
+
+
+def select_tier(tools: list[str], tiers: list[dict]) -> str | None:
+    """Retorna o perfil do primeiro nível que cobre todas as tools."""
+    needed = set(tools)
+    for tier in tiers:
+        if needed <= set(tier.get("covers", [])):
+            return tier["profile"]
+    return None
+
+
+def resolve_route(spec: AgentSpec, agents_cfg: dict) -> AgentRoute:
+    """Resolve perfil, modelo e esforço do agente; levanta AgentRouteError se inviável."""
+    tiers = agents_cfg.get("tiers")
+    profile = select_tier(spec.tools, tiers) if isinstance(tiers, list) else None
+    if profile is None:
+        msg = (
+            f"Agent '{spec.name}' needs tools {spec.tools}; no tier covers them. "
+            "No message was sent."
+        )
+        raise AgentRouteError(msg)
+    model: str | None = None
+    if spec.model is not None and spec.model != "inherit":
+        model_map = agents_cfg.get("model_map")
+        if not isinstance(model_map, dict) or spec.model not in model_map:
+            msg = (
+                f"Agent '{spec.name}' uses model '{spec.model}', which has no entry "
+                "in agents.model_map. No message was sent."
+            )
+            raise AgentRouteError(msg)
+        model = model_map[spec.model]
+    return AgentRoute(profile=profile, model=model, reasoning_effort=spec.effort)
+
+
+def make_conversation_id(agent: str, session_id: str) -> str:
+    """Monta o id de conversa no formato <agente>:<session_id>."""
+    return f"{agent}:{session_id}"
+
+
+def parse_conversation_id(conversation: str) -> tuple[str, str]:
+    """Separa o id de conversa no primeiro ':'; levanta AgentRouteError se malformado."""
+    agent, sep, session_id = conversation.partition(":")
+    if not sep or not agent or not session_id:
+        msg = (
+            f"Malformed conversation id '{conversation}'; expected '<agent>:<session_id>'. "
+            "No message was sent."
+        )
+        raise AgentRouteError(msg)
+    return agent, session_id
