@@ -321,3 +321,8 @@ def get_default_direct_endpoint() -> str:
         return ""
     raw = section.get("default_endpoint")
     return raw.strip() if isinstance(raw, str) else ""
+
+
+def get_agents_config() -> dict:
+    """Return the hermes_herald.agents section, or {}."""
+    return _load_config().get("agents") or {}

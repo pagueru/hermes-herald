@@ -29,7 +29,7 @@ pkg.__path__ = [PLUGIN_DIR]
 sys.modules["hermes_herald"] = pkg
 
 # Manually load submodules by file path
-for name in ("config", "ledger", "tools", "callback"):
+for name in ("config", "ledger", "agents", "tools", "callback"):
     filepath = os.path.join(PLUGIN_DIR, f"{name}.py")
     spec = importlib.util.spec_from_file_location(f"hermes_herald.{name}", filepath)
     mod = importlib.util.module_from_spec(spec)
