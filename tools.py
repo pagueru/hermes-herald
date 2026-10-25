@@ -46,6 +46,13 @@ from urllib.request import (
 from urllib.error import HTTPError, URLError
 
 from . import config as cfg
+from .agents import (
+    AgentRouteError,
+    load_agents,
+    make_conversation_id,
+    parse_conversation_id,
+    resolve_route,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -404,8 +411,23 @@ DISPATCH_CHAT_SCHEMA: Dict[str, Any] = {
                     "hermes_herald.chat_timeout (default 600s). Minimum 30."
                 ),
             },
+            "agent": {
+                "type": "string",
+                "description": (
+                    "Agent name defined by a .md file in hermes_herald.agents.dir. "
+                    "Use instead of profile; never both."
+                ),
+            },
+            "conversation": {
+                "type": "string",
+                "description": (
+                    "Conversation id '<agent>:<session_id>' returned by a "
+                    "previous agent call; pass it to continue that conversation. "
+                    "Omit to start a new one. Not allowed with new_session."
+                ),
+            },
         },
-        "required": ["profile", "message"],
+        "required": ["message"],
     },
 }
 
@@ -2498,12 +2520,57 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
     instructions = args.get("instructions")
     new_session = args.get("new_session", False)
     model_override = args.get("model")
+    raw_effort = args.get("reasoning_effort")
+    # Caminho por agente (.md): resolve agente, rota e sessão antes de qualquer envio
+    agent_name = str(args.get("agent") or "").strip()
+    conversation = str(args.get("conversation") or "").strip()
+    agent_spec = None
+    conversation_session_id = ""
+    if agent_name or conversation:
+        if profile:
+            return _tool_error(
+                "Pass either 'profile' or 'agent', not both. No message was sent."
+            )
+        if conversation and new_session:
+            return _tool_error(
+                "'conversation' cannot be combined with new_session; omit "
+                "conversation to start a new one. No message was sent."
+            )
+        try:
+            if conversation:
+                conv_agent, conversation_session_id = parse_conversation_id(conversation)
+                if agent_name and agent_name != conv_agent:
+                    raise AgentRouteError(
+                        f"Conversation '{conversation}' belongs to agent "
+                        f"'{conv_agent}', not '{agent_name}'. No message was sent."
+                    )
+                agent_name = conv_agent
+            agents_cfg = cfg.get_agents_config()
+            agents_dir = str(agents_cfg.get("dir") or "").strip()
+            specs = load_agents(Path(agents_dir)) if agents_dir else {}
+            if not specs:
+                return _tool_error(
+                    "Agents are not configured (hermes_herald.agents.dir is "
+                    "missing or empty). No message was sent."
+                )
+            agent_spec = specs.get(agent_name)
+            if agent_spec is None:
+                raise AgentRouteError(
+                    f"Unknown agent '{agent_name}'. No message was sent."
+                )
+            route = resolve_route(agent_spec, agents_cfg)
+        except AgentRouteError as exc:
+            return _tool_error(str(exc))
+        profile = route.profile
+        model_override = model_override or route.model
+        if raw_effort is None:
+            raw_effort = route.reasoning_effort
     requested_provider, provider_error = _parse_optional_provider(args.get("provider"))
     if provider_error:
         return _tool_error(provider_error)
     call_timeout = args.get("stall_timeout_seconds")
     try:
-        reasoning_effort = _parse_subagent_reasoning_effort(args.get("reasoning_effort"))
+        reasoning_effort = _parse_subagent_reasoning_effort(raw_effort)
     except ValueError as e:
         return _tool_error(str(e))
 
@@ -2540,7 +2607,32 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
     from .callback import get_profile_session_id, store_profile_session_id
 
     # Get or create a session for this profile
-    session_id = get_profile_session_id(profile)
+    if agent_spec is not None:
+        # Agente: a sessão vem só do id de conversa; o alvo aceita id
+        # desconhecido sem erro, então confirmar a existência antes do envio
+        session_id = conversation_session_id
+        if session_id:
+            try:
+                session_check = _get_json(
+                    f"{pcfg['url']}/api/sessions/{session_id}",
+                    pcfg["api_key"],
+                    timeout=10.0,
+                )
+            except (RuntimeError, TimeoutError) as e:
+                msg = str(e)
+                if "Cannot reach" in msg:
+                    return _tool_error(
+                        f"Cannot reach {profile} API server at {pcfg['url']}. "
+                        f"Is the gateway running for that profile? ({msg})"
+                    )
+                return _tool_error(f"Failed to check session on {profile}: {msg}")
+            if session_check.get("status") == "not_found":
+                return _tool_error(
+                    f"Session {session_id} for '{conversation}' not found: "
+                    "conversation expired; omit conversation to start a new one."
+                )
+    else:
+        session_id = get_profile_session_id(profile)
 
     if not session_id or new_session:
         # Create a new session on the target API server
@@ -2572,7 +2664,8 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
             return _tool_error(
                 f"Unexpected response creating session on {profile}: {json.dumps(create_result)}"
             )
-        store_profile_session_id(profile, session_id)
+        if agent_spec is None:
+            store_profile_session_id(profile, session_id)
 
     # Resolve timeout: per-call override > config default (600s)
     from .config import get_chat_timeout
@@ -2589,6 +2682,9 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
 
     # Stream one OpenAI-compatible turn while preserving target session history.
     chat_messages: List[Dict[str, Any]] = []
+    if agent_spec is not None:
+        # Corpo do .md reenviado em todo turno, antes das instructions
+        chat_messages.append({"role": "system", "content": agent_spec.body})
     if instructions:
         chat_messages.append({"role": "system", "content": instructions})
     chat_messages.append({"role": "user", "content": message})
@@ -2639,7 +2735,8 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
             )
         if "404" in msg:
             # Session was deleted/expired — clear cache and retry with new session
-            store_profile_session_id(profile, "")
+            if agent_spec is None:
+                store_profile_session_id(profile, "")
             return _tool_error(
                 f"Session {session_id} not found on {profile}. It may have "
                 f"expired. Retry with new_session=true to start a fresh conversation."
@@ -2664,8 +2761,14 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
     # Extract the reply
     reply = result.get("reply", "")
     result_session_id = result.get("session_id", session_id)
-    if result_session_id != session_id:
+    if result_session_id != session_id and agent_spec is None:
         store_profile_session_id(profile, result_session_id)
+    agent_fields: Dict[str, str] = {}
+    if agent_spec is not None:
+        agent_fields = {
+            "agent": agent_spec.name,
+            "conversation": make_conversation_id(agent_spec.name, result_session_id),
+        }
 
     usage = result.get("usage", {})
 
@@ -2701,6 +2804,7 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
                 "output_preview": reply[:500] if reply else "",
                 "usage": usage,
                 "type": "chat",
+                **agent_fields,
             })
             _save_state(state)
     except Exception as exc:
@@ -2753,6 +2857,7 @@ def handle_dispatch_chat(args: dict, **kwargs) -> str:
         "requested_model": model_provenance["requested_model"],
         "resolved_model": model_provenance["resolved_model"],
         "model_resolution": model_provenance["resolution_source"],
+        **agent_fields,
     }
     if recovery_warning:
         response["warning"] = recovery_warning
