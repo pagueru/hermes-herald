@@ -37,12 +37,14 @@ class IdentityError(RuntimeError):
 
 
 class DispatchIdentity:
-    def __init__(self, args):
+    def __init__(self, args, agent=""):
         self.key = args.get("idempotency_key") if "idempotency_key" in args else uuid.uuid4().hex
         if (not isinstance(self.key, str) or not 1 <= len(self.key) <= 255
                 or any(not 33 <= ord(ch) <= 126 for ch in self.key)):
             raise IdentityError("invalid_idempotency_key", "idempotency_key must be 1-255 visible ASCII characters; it is never trimmed or repaired.")
         self.args = {k: v for k, v in args.items() if k in _REQUEST_FIELDS}
+        # nome do agente (.md) quando a chamada veio por agent=; só muda a mensagem de conflito
+        self.agent = agent
         self.token = uuid.uuid4().hex
         self.row = None
         self.claimed = False
@@ -79,7 +81,10 @@ class DispatchIdentity:
             else:
                 self.row = dict(row)
                 if (row["request_json"], row["owner_json"], row["route_json"]) != (request, owner, route):
-                    raise IdentityError("idempotency_conflict", "This key belongs to different arguments, routing, or origin/session ownership. Do not change the request when retrying. With agent=, an edit to the agent's .md or to agent routing (tiers, model_map) since the original call also changes the request; use a new key to start new work.")
+                    message = "This key belongs to different arguments, routing, or origin/session ownership. Do not change the request when retrying."
+                    if self.agent:
+                        message += f" With agent='{self.agent}', a change to the agent's .md body, tools, model or effort, or to agent routing (tiers, model_map), since the original call also changes the request; use a new key to start new work."
+                    raise IdentityError("idempotency_conflict", message)
                 if row["response_json"]:
                     response = json.loads(row["response_json"])
                     response["idempotency_replayed"] = True

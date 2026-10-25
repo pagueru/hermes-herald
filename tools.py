@@ -2031,7 +2031,7 @@ def _agent_dispatch_args(args: dict) -> tuple[dict, str]:
     """
     agent_name = str(args.get("agent") or "").strip()
     if not agent_name:
-        # caminho legado: conversation segue ignorado, como antes do agent=
+        # sem agent=: conversation é ignorado, igual ao upstream 0c63343, onde o campo não existia
         return {k: v for k, v in args.items() if k != "agent"}, ""
     if str(args.get("conversation") or "").strip():
         raise AgentRouteError(
@@ -2068,7 +2068,7 @@ def handle_dispatch_agent(args: dict, **kwargs) -> str:
     except AgentRouteError as exc:
         return _tool_error(str(exc))
     try:
-        identity = DispatchIdentity(args)
+        identity = DispatchIdentity(args, agent=agent_name)
     except IdentityError as exc:
         return json.dumps({"status": "error", "error": str(exc), "error_code": exc.code})
     try:

@@ -118,8 +118,11 @@ def test_conversation_with_agent_is_refused(env: dict) -> None:
     assert "conversation" in out["error"]
 
 
-def test_conversation_without_agent_is_ignored_as_before(env: dict) -> None:
-    """Testa que no caminho legado conversation segue ignorado, sem recusa."""
+def test_conversation_without_agent_is_ignored_like_upstream(env: dict) -> None:
+    """Testa que sem agent conversation é ignorado.
+
+    Igual ao upstream 0c63343, onde o campo não existia.
+    """
     out = _call({"profile": "reviewer", "conversation": "scout:s1", "message": "x"})
     assert out["run_id"] == "run-1"
     assert env["requests"][0][1] == {"input": "x"}
@@ -201,6 +204,16 @@ def test_retry_with_agent_after_md_edit_conflicts_without_new_post(env: dict) ->
     assert out["error_code"] == "idempotency_conflict"
     assert "agent" in out["error"]
     assert "model_map" in out["error"]
+    assert len(env["requests"]) == 1
+
+
+def test_retry_conflict_without_agent_keeps_original_message(env: dict) -> None:
+    """Testa que conflito sem agent mantém a mensagem original, sem a frase do .md."""
+    _call({"profile": "reviewer", "message": "x", "idempotency_key": "k-legacy"})
+    out = _call({"profile": "reviewer", "message": "y", "idempotency_key": "k-legacy"})
+    assert out["error_code"] == "idempotency_conflict"
+    assert out["error"].endswith("Do not change the request when retrying.")
+    assert "model_map" not in out["error"]
     assert len(env["requests"]) == 1
 
 
