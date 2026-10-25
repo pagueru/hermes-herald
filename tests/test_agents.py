@@ -125,3 +125,26 @@ def test_parse_conversation_id_rejects_malformed(bad: str) -> None:
     """Testa que ids malformados levantam erro."""
     with pytest.raises(agents.AgentRouteError):
         agents.parse_conversation_id(bad)
+
+
+def _catalog_specs() -> dict[str, agents.AgentSpec]:
+    """Monta um agente roteável e outro sem nível que o cubra."""
+    return {
+        "oracle": agents.AgentSpec("oracle", "Revisor", "b", ["Read"], None, None),
+        "implementer": agents.AgentSpec("implementer", "Dev", "b", ["Edit", "Write"], None, None),
+    }
+
+
+def test_with_agents_catalog_appends_routable_agents() -> None:
+    """Testa que só agentes roteáveis entram na descrição da cópia."""
+    schema = {"name": "dispatch_chat", "description": "Base."}
+    out = agents.with_agents_catalog(schema, _catalog_specs(), {"tiers": TIERS})
+    assert out["description"].endswith("- oracle: Revisor")
+    assert "implementer" not in out["description"]
+    assert schema["description"] == "Base."
+
+
+def test_with_agents_catalog_without_agents_returns_schema_unchanged() -> None:
+    """Testa que sem agente roteável o schema volta igual."""
+    schema = {"name": "dispatch_chat", "description": "Base."}
+    assert agents.with_agents_catalog(schema, {}, {"tiers": TIERS}) == schema

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
@@ -146,3 +147,28 @@ def parse_conversation_id(conversation: str) -> tuple[str, str]:
         )
         raise AgentRouteError(msg)
     return agent, session_id
+
+
+def describe_agents(specs: dict[str, AgentSpec], agents_cfg: dict) -> str:
+    """Lista uma linha por agente roteável, ordenada por nome."""
+    lines: list[str] = []
+    for name in sorted(specs):
+        try:
+            resolve_route(specs[name], agents_cfg)
+        except AgentRouteError:
+            continue
+        lines.append(f"- {name}: {specs[name].description}")
+    return "\n".join(lines)
+
+
+def with_agents_catalog(schema: dict, specs: dict[str, AgentSpec], agents_cfg: dict) -> dict:
+    """Retorna cópia do schema com o catálogo de agentes na descrição.
+
+    Os agentes são lidos no registro: mudança de .md vale após reiniciar o gateway.
+    """
+    catalog = describe_agents(specs, agents_cfg)
+    if not catalog:
+        return schema
+    out = copy.deepcopy(schema)
+    out["description"] = f"{out['description']}\n\nAgents available via agent=:\n{catalog}"
+    return out

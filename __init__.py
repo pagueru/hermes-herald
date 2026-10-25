@@ -90,7 +90,19 @@ def register(ctx) -> None:
     if os.environ.get("HERMES_PLUGIN_HOST_PROCESS") == "1":
         host_delegate = HostLifecycleAdapter(ctx)
 
+    chat_schema = ALL_SCHEMAS[4]
+    try:
+        from . import agents, config
+
+        agents_cfg = config.get_agents_config()
+        specs = agents.load_agents(Path(agents_cfg["dir"])) if agents_cfg.get("dir") else {}
+        chat_schema = agents.with_agents_catalog(chat_schema, specs, agents_cfg)
+    except Exception:  # registro do plugin nunca falha por causa de agentes
+        logger.warning("hermes-herald: agents catalog skipped", exc_info=True)
+
     for name, schema, handler, emoji in _TOOLS:
+        if name == "dispatch_chat":
+            schema = chat_schema
         if name == "delegate_subagent" and host_delegate is not None:
             schema = HOST_DELEGATE_SUBAGENT_SCHEMA
             handler = host_delegate
